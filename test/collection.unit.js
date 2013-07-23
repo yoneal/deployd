@@ -1,5 +1,8 @@
 var Collection = require('../lib/resources/collection')
-  , db = require('../lib/db');
+  , db = require('../lib/db')
+  , async = require('async')
+  , Script = require('../lib/script')
+  , _ = require('underscore');
 
 describe('collection', function(){
   function createCollection(properties) {
@@ -198,6 +201,89 @@ describe('collection', function(){
           expect(updated).to.exist;
           expect(updated.count).to.equal(101);
           done(err);
+        });
+      });
+    });
+
+    function createParallelCommands(collection, body, query, count) {
+      var parallels = [];
+      var fn = body;
+      if (typeof fn !== "function") {
+        fn = function () {
+          return body;
+        }
+      }
+      for (var i=0; i<count; i++) {
+        parallels.push(function (callback) {
+          collection.save({'body': fn(i), 'query': query}, function (err, updated) {
+            expect(err).to.not.exist;
+            expect(updated).to.exist;
+            callback(null, i);
+          });
+        });
+      }
+      return parallels;
+    }
+
+    it('should handle concurrent $inc well', function(done) {
+      var c = new Collection('counts', {db: db.create(TEST_DB), config: { properties: {count: {type: 'number'}}}});
+
+      c.save({body: {count: 0}}, function (err, item) {
+        expect(item.id).to.exist;
+        expect(err).to.not.exist;
+        var count = 4;
+        var parallels = createParallelCommands(c,{count: {$inc: 1}}, {id: item.id}, count);
+
+        async.parallel(parallels, function(err, results){
+          c.find({query: {id: item.id}}, function (err, items) {
+            expect(items.count).to.equal(count);
+            done(err);
+          });
+        });
+      });
+    });
+
+    it('should handle concurrent $push well', function(done) {
+      var c = new Collection('arrays', {db: db.create(TEST_DB), config: { properties: {list: {type: 'array'}}}});
+
+      c.save({body: {list: []}}, function (err, item) {
+        expect(item.id).to.exist;
+        expect(err).to.not.exist;
+        var count = 4;
+        var parallels = createParallelCommands(c,{list: {$push: 1}}, {id: item.id}, count);
+
+        async.parallel(parallels, function(err, results){
+          c.find({query: {id: item.id}}, function (err, items) {
+            expect(items.list).to.have.length(count);
+            expect(items.list).to.deep.equal([1, 1, 1, 1]);
+            done(err);
+          });
+        });
+      });
+    });
+
+    it('should handle concurrent $pull well', function(done) {
+      var c = new Collection('arrays', {db: db.create(TEST_DB), config: { properties: {list: {type: 'array'}}}});
+
+      c.save({body: {list: [1, 2, 3, 4]}}, function (err, item) {
+        expect(item.id).to.exist;
+        expect(err).to.not.exist;
+        var count = 3;
+        var parallels = createParallelCommands(
+          c,
+          function (i) {
+            return {list: {$pull: i}}
+          },
+          {id: item.id},
+          count
+        );
+
+        async.parallel(parallels, function(err, results){
+          c.find({query: {id: item.id}}, function (err, items) {
+            expect(items.list).to.have.length(1);
+            expect(items.list).to.deep.equal([1]);
+            done(err);
+          });
         });
       });
     });
